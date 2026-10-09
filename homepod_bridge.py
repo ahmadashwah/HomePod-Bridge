@@ -47,7 +47,7 @@ from audio_route import (
 
 _LOGGER = logging.getLogger("homepod_bridge")
 
-APP_VERSION = "1.0.2"
+APP_VERSION = "1.0.3"
 UPDATE_REPO = "ahmadashwah/HomePod-Bridge"  # GitHub releases carry the exe
 
 # MessageBoxW flags / results
@@ -757,6 +757,8 @@ class TrayApp:
         self.scan()
         self.root.after(400, self.show)
         self.root.after(500, self.watch_output)
+        if os.environ.get("HB_UPDATE_SELFTEST") == "1":  # end-to-end updater test
+            self.root.after(3000, lambda: self.check_for_updates(unattended=True))
 
     # ----- flyout -----------------------------------------------------------
 
@@ -1163,12 +1165,16 @@ class TrayApp:
                 self.bridge.set_volume(volume)
         self.root.after(200, self.poll_windows_volume)
 
-    def check_for_updates(self) -> None:
+    def check_for_updates(self, unattended: bool = False) -> None:
+        """unattended=True (HB_UPDATE_SELFTEST only) installs without asking."""
         if self._updating:
             return
         self._updating = True
 
         def ask(text: str, flags: int) -> int:
+            if unattended:
+                _LOGGER.info("Update dialog (auto-answered): %s", text.splitlines()[0])
+                return IDYES
             return ctypes.windll.user32.MessageBoxW(
                 None, text, "HomePod Bridge", flags | MB_TOPMOST
             )

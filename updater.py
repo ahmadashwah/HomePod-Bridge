@@ -107,7 +107,12 @@ def install(release: Release) -> None:
     except Exception:
         os.replace(old_path, exe)  # put things back
         raise
-    subprocess.Popen([exe, AFTER_UPDATE_FLAG], close_fds=True)
+    # Without this the new copy inherits our PyInstaller settings and tries to
+    # run from our unpack folder, which is deleted as we exit ("No module
+    # named '_overlapped'" in 1.0.2).
+    env = os.environ.copy()
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    subprocess.Popen([exe, AFTER_UPDATE_FLAG], env=env, close_fds=True)
 
 
 def clean_up_after_update() -> None:
