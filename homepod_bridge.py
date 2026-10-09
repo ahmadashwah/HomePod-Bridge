@@ -47,7 +47,7 @@ from audio_route import (
 
 _LOGGER = logging.getLogger("homepod_bridge")
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 UPDATE_REPO = "ahmadashwah/HomePod-Bridge"  # GitHub releases carry the exe
 
 # MessageBoxW flags / results
@@ -915,8 +915,6 @@ class TrayApp:
                     self.on_status(event[1])
                 elif kind == "toggle":
                     self.toggle_flyout()
-                elif kind == "connect":
-                    self.toggle_connect()
                 elif kind == "devices":
                     self.on_devices(event[1])
                 elif kind == "autostart":
@@ -1018,13 +1016,6 @@ class TrayApp:
             self.disconnect(switch_back=False)
         self.selected = name
         self.connect()
-
-    def toggle_connect(self) -> None:
-        """Tray menu Connect/Disconnect: uses the last speaker."""
-        if self.bridge.connected:
-            self.disconnect()
-        else:
-            self.connect()
 
     def connect(self) -> None:
         conf = self.devices.get(self.selected or "")
