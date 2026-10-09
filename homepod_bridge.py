@@ -24,7 +24,7 @@ from collections import deque
 
 import numpy as np
 import pystray
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageTk
 import pyaudiowpatch as pyaudio
 import soxr
 
@@ -47,7 +47,7 @@ from audio_route import (
 
 _LOGGER = logging.getLogger("homepod_bridge")
 
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 UPDATE_REPO = "ahmadashwah/HomePod-Bridge"  # GitHub releases carry the exe
 
 # MessageBoxW flags / results
@@ -594,6 +594,61 @@ REFRESH_GLYPH = "\ue72c"
 FONT = "Segoe UI"
 
 
+def device_kind(conf) -> str:
+    """Which icon a speaker gets, from the model it announces."""
+    model = f"{conf.device_info.model} {conf.device_info.model_str}".lower()
+    if "homepod" in model:
+        return "homepod_mini" if "mini" in model else "homepod"
+    if "appletv" in model.replace(" ", "") or "tv" in model.split():
+        return "tv"
+    if (conf.device_info.model_str or "").startswith("Mac"):
+        # Macs only give an id like "Mac16,12"; the name usually says which.
+        return "laptop" if "macbook" in conf.name.lower() else "desktop"
+    return "speaker"
+
+
+def _hex_rgb(color: str) -> tuple[int, int, int]:
+    return tuple(int(color[i:i + 2], 16) for i in (1, 3, 5))
+
+
+def device_icon(kind: str, color: str, size: int) -> Image.Image:
+    """Mac-AirPlay-menu style device icon, drawn at 4x and scaled down so the
+    edges stay smooth."""
+    s = size * 4
+    img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    fill = (*_hex_rgb(color), 255)
+    cut = (*_hex_rgb(BG), 255)  # "engraved" details in the background colour
+    line = max(4, s // 14)
+
+    def u(*values):  # coordinates in 0..100 units
+        return [round(v * s / 100) for v in values]
+
+    if kind == "homepod_mini":
+        d.ellipse(u(14, 18, 86, 90), fill=fill)  # sphere
+        d.ellipse(u(30, 21, 70, 33), fill=cut)  # flat top
+        d.ellipse(u(36, 24, 64, 30), fill=fill)
+    elif kind == "homepod":
+        d.rounded_rectangle(u(24, 6, 76, 94), radius=s * 24 // 100, fill=fill)
+        d.ellipse(u(31, 10, 69, 22), fill=cut)  # top surface
+        d.ellipse(u(37, 13, 63, 19), fill=fill)
+    elif kind == "laptop":
+        d.rounded_rectangle(u(17, 22, 83, 70), radius=s // 25, outline=fill, width=line)
+        d.rounded_rectangle(u(6, 74, 94, 82), radius=s // 25, fill=fill)
+    elif kind == "desktop":
+        d.rounded_rectangle(u(10, 16, 90, 68), radius=s // 25, outline=fill, width=line)
+        d.polygon(u(42, 68, 58, 68, 62, 84, 38, 84), fill=fill)  # stand
+        d.rounded_rectangle(u(30, 82, 70, 88), radius=s // 40, fill=fill)
+    elif kind == "tv":
+        d.rounded_rectangle(u(8, 20, 92, 72), radius=s // 25, outline=fill, width=line)
+        d.rounded_rectangle(u(32, 80, 68, 86), radius=s // 40, fill=fill)
+    else:  # generic speaker
+        d.rounded_rectangle(u(26, 8, 74, 92), radius=s // 10, outline=fill, width=line)
+        d.ellipse(u(38, 18, 62, 42), outline=fill, width=line)  # tweeter
+        d.ellipse(u(34, 50, 66, 82), outline=fill, width=line)  # woofer
+    return img.resize((size, size), Image.LANCZOS)
+
+
 def tray_image(active: bool) -> Image.Image:
     """A small HomePod silhouette; lit blue on top while playing."""
     size = 64
@@ -658,6 +713,7 @@ class TrayApp:
         self._shown_rows: tuple | None = None
         self.rows: dict[str, dict] = {}
         self._updating = False
+        self._icons: dict[tuple[str, str], ImageTk.PhotoImage] = {}
         self._shown_size: tuple[int, int] | None = None
         self._last_volume = None
         self._cable_id: str | None = None
@@ -800,7 +856,7 @@ class TrayApp:
         frame = tk.Frame(self.list_frame, bg=BG, padx=self.px(8), pady=self.px(8))
         frame.grid(row=row, column=0, sticky="ew")
         frame.columnconfigure(1, weight=1)
-        icon = tk.Label(frame, text=SPEAKER_GLYPH, bg=BG, font=(ICON_FONT, 18))
+        icon = tk.Label(frame, bg=BG)
         icon.grid(row=0, column=0, rowspan=2, padx=(0, self.px(12)))
         title = tk.Label(frame, text=name, bg=BG, font=(FONT, 11, "bold"), anchor="w")
         title.grid(row=0, column=1, sticky="w")
@@ -823,7 +879,7 @@ class TrayApp:
         else:
             state, dot = speaker_model(conf), SUBTLE
 
-        row["icon"].config(fg=dot)
+        row["icon"].config(image=self.icon_image(device_kind(conf), dot))
         row["title"].config(fg=SUBTLE if blocked else FG)
         row["state"].config(text=state,
                             fg=GOOD if is_active and self.playing else SUBTLE)
@@ -836,6 +892,13 @@ class TrayApp:
         else:
             button.set_style("Connect", (ACCENT, ACCENT_HOVER))
         button.grid()
+
+    def icon_image(self, kind: str, color: str) -> ImageTk.PhotoImage:
+        """Cached Tk image (Tk shows nothing if the Python object is collected)."""
+        key = (kind, color)
+        if key not in self._icons:
+            self._icons[key] = ImageTk.PhotoImage(device_icon(kind, color, self.px(30)))
+        return self._icons[key]
 
     def blocked_reason(self, conf) -> str | None:
         return self.refused.get(conf.name) or unsupported_reason(conf)
