@@ -47,7 +47,7 @@ from audio_route import (
 
 _LOGGER = logging.getLogger("homepod_bridge")
 
-APP_VERSION = "1.0.3"
+APP_VERSION = "1.0.4"
 UPDATE_REPO = "ahmadashwah/HomePod-Bridge"  # GitHub releases carry the exe
 
 # MessageBoxW flags / results
@@ -775,8 +775,6 @@ class TrayApp:
         header.columnconfigure(0, weight=1)
         tk.Label(header, text="AirPlay speakers", bg=BG, fg=FG,
                  font=(FONT, 14, "bold"), anchor="w").grid(row=0, column=0, sticky="w")
-        self.searching_label = tk.Label(header, bg=BG, fg=SUBTLE, font=(FONT, 10))
-        self.searching_label.grid(row=0, column=1, padx=(0, self.px(8)))
         # Search again: a refresh icon, left of the close button.
         self.refresh_icon = tk.Label(header, text=REFRESH_GLYPH, bg=BG,
                                      font=(ICON_FONT, 13), padx=self.px(6))
@@ -795,9 +793,13 @@ class TrayApp:
         close.grid(row=0, column=3)
         close.bind("<Button-1>", lambda _e: self.hide())
 
-        tk.Frame(card, bg=DIVIDER, height=1).grid(
-            row=2, column=0, columnspan=2, sticky="ew", pady=self.px(10)
-        )
+        # The line under the header; while searching it becomes moving dots.
+        self.divider = tk.Canvas(card, height=self.px(2), bg=BG, bd=0,
+                                 highlightthickness=0)
+        self.divider.grid(row=2, column=0, columnspan=2, sticky="ew", pady=self.px(10))
+        self.divider.bind("<Configure>", lambda _e: self.draw_divider())
+        self._dots_offset = 0
+        self._dots_job = None
 
         self.list_frame = tk.Frame(card, bg=BG)
         self.list_frame.grid(row=3, column=0, columnspan=2, sticky="ew")
@@ -813,11 +815,15 @@ class TrayApp:
 
     def refresh_ui(self) -> None:
         if self.scanning:
-            self.searching_label.config(text="Searching...")
             self.refresh_icon.config(fg=NEUTRAL_HOVER, cursor="")
+            if self._dots_job is None:
+                self.animate_dots()
         else:
-            self.searching_label.config(text="")
             self.refresh_icon.config(fg=SUBTLE, cursor="hand2")
+            if self._dots_job is not None:
+                self.root.after_cancel(self._dots_job)
+                self._dots_job = None
+            self.draw_divider()
 
         # Rows are created once per speaker and then only updated: destroying and
         # recreating them left see-through holes in the flyout for a frame.
@@ -853,6 +859,23 @@ class TrayApp:
         self.icon_state(self.bridge.connected and self.playing)
         if self.visible:
             self.place_flyout()  # height changed; keep it sitting on the taskbar
+
+    def draw_divider(self) -> None:
+        """A plain line, or (while searching) dots marching to the right."""
+        canvas = self.divider
+        canvas.delete("all")
+        width, height = canvas.winfo_width(), canvas.winfo_height()
+        if not self.scanning:
+            canvas.create_rectangle(0, 0, width, height, fill=DIVIDER, width=0)
+            return
+        spacing, dot = self.px(10), self.px(4)
+        for x in range(self._dots_offset % spacing - spacing, width, spacing):
+            canvas.create_rectangle(x, 0, x + dot, height, fill=ACCENT, width=0)
+
+    def animate_dots(self) -> None:
+        self._dots_offset += self.px(1)
+        self.draw_divider()
+        self._dots_job = self.root.after(30, self.animate_dots)
 
     def build_device_row(self, row: int, name: str) -> dict:
         frame = tk.Frame(self.list_frame, bg=BG, padx=self.px(8), pady=self.px(8))
