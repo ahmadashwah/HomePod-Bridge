@@ -1,0 +1,9 @@
+pyatv
+pyaudiowpatch
+soxr
+numpy
+pycaw
+comtypes
+pystray
+pillow
+pyinstaller
