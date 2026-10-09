@@ -794,11 +794,11 @@ class TrayApp:
         close.bind("<Button-1>", lambda _e: self.hide())
 
         # The line under the header; while searching it becomes moving dots.
-        self.divider = tk.Canvas(card, height=self.px(2), bg=BG, bd=0,
+        self.divider = tk.Canvas(card, height=self.px(4), bg=BG, bd=0,
                                  highlightthickness=0)
-        self.divider.grid(row=2, column=0, columnspan=2, sticky="ew", pady=self.px(10))
+        self.divider.grid(row=2, column=0, columnspan=2, sticky="ew", pady=self.px(9))
         self.divider.bind("<Configure>", lambda _e: self.draw_divider())
-        self._dots_offset = 0
+        self._dots_start = 0.0
         self._dots_job = None
 
         self.list_frame = tk.Frame(card, bg=BG)
@@ -817,6 +817,7 @@ class TrayApp:
         if self.scanning:
             self.refresh_icon.config(fg=NEUTRAL_HOVER, cursor="")
             if self._dots_job is None:
+                self._dots_start = time.monotonic()
                 self.animate_dots()
         else:
             self.refresh_icon.config(fg=SUBTLE, cursor="hand2")
@@ -860,22 +861,42 @@ class TrayApp:
         if self.visible:
             self.place_flyout()  # height changed; keep it sitting on the taskbar
 
+    # Windows' "searching" dots (the Bluetooth "Add a device" screen): five
+    # dots enter one after another, ease into a cluster in the middle, then
+    # speed off to the right; a short pause and it repeats.
+    DOTS = 5
+    DOT_STAGGER_SEC = 0.17  # delay between consecutive dots
+    DOT_TRAVEL_SEC = 2.4  # time for one dot to cross
+    DOTS_CYCLE_SEC = 3.5  # whole pattern, including the pause
+    DOT_MID_SPEED = 0.3  # speed through the middle, relative to an even pace
+
     def draw_divider(self) -> None:
-        """A plain line, or (while searching) dots marching to the right."""
+        """A thin line, or (while searching) the moving dots."""
         canvas = self.divider
         canvas.delete("all")
         width, height = canvas.winfo_width(), canvas.winfo_height()
         if not self.scanning:
-            canvas.create_rectangle(0, 0, width, height, fill=DIVIDER, width=0)
+            middle = height // 2
+            canvas.create_rectangle(0, middle, width, middle + 1, fill=DIVIDER, width=0)
             return
-        spacing, dot = self.px(10), self.px(4)
-        for x in range(self._dots_offset % spacing - spacing, width, spacing):
-            canvas.create_rectangle(x, 0, x + dot, height, fill=ACCENT, width=0)
+        t = (time.monotonic() - self._dots_start) % self.DOTS_CYCLE_SEC
+        size = height
+        for i in range(self.DOTS):
+            # The first dot leads; each later one starts a little after it.
+            u = (t - i * self.DOT_STAGGER_SEC) / self.DOT_TRAVEL_SEC
+            if not 0 <= u <= 1:
+                continue
+            # Fast at the edges, a slow crawl (not a stop) through the middle,
+            # so the dots bunch up but stay apart: 0.5 + a*v + b*v^3 with
+            # v = u - 0.5, middle speed a, and b chosen so it ends at 1.
+            v = u - 0.5
+            progress = 0.5 + self.DOT_MID_SPEED * v + (4 - 4 * self.DOT_MID_SPEED) * v ** 3
+            x = progress * (width + size) - size
+            canvas.create_oval(x, 0, x + size, size, fill=ACCENT, width=0)
 
     def animate_dots(self) -> None:
-        self._dots_offset += self.px(1)
         self.draw_divider()
-        self._dots_job = self.root.after(30, self.animate_dots)
+        self._dots_job = self.root.after(16, self.animate_dots)  # ~60 fps
 
     def build_device_row(self, row: int, name: str) -> dict:
         frame = tk.Frame(self.list_frame, bg=BG, padx=self.px(8), pady=self.px(8))
