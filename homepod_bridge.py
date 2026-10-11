@@ -619,6 +619,8 @@ ACCENT_HOVER = "#3395ff"
 NEUTRAL = "#3a3a3a"
 NEUTRAL_HOVER = "#474747"
 GOOD = "#30d158"
+DISABLED_BG = "#2b2b2b"
+DISABLED_FG = "#6b6b6b"
 ROW_HOVER = "#2d2d2d"
 DIVIDER = "#333333"
 # Speaker icon from Windows 11's own icon font.
@@ -716,13 +718,17 @@ class FlatButton(tk.Label):
         super().__init__(parent, cursor="hand2", **kwargs)
         self.command = command
         self.colors = (ACCENT, ACCENT_HOVER)
-        self.bind("<Button-1>", lambda _e: self.command())
-        self.bind("<Enter>", lambda _e: self.config(bg=self.colors[1]))
+        self.enabled = True
+        self.bind("<Button-1>", lambda _e: self.enabled and self.command())
+        self.bind("<Enter>", lambda _e: self.enabled and self.config(bg=self.colors[1]))
         self.bind("<Leave>", lambda _e: self.config(bg=self.colors[0]))
 
-    def set_style(self, text: str, colors: tuple[str, str]) -> None:
-        self.colors = colors
-        self.config(text=text, bg=colors[0])
+    def set_style(self, text: str, colors: tuple[str, str], enabled: bool = True) -> None:
+        """enabled=False shades the button and makes it do nothing."""
+        self.enabled = enabled
+        self.colors = colors if enabled else (DISABLED_BG, DISABLED_BG)
+        self.config(text=text, bg=self.colors[0], fg=FG if enabled else DISABLED_FG,
+                    cursor="hand2" if enabled else "arrow")
 
 
 class TrayApp:
@@ -991,9 +997,12 @@ class TrayApp:
             state = "Connected" + (f"   {battery}" if battery else "")
             colour, active = GOOD, True
         elif pods.connect_failed:
-            state, colour, active = "Couldn't connect - in use by your phone?", SUBTLE, False
+            state = "Couldn't connect" + (f"   {battery}" if battery else "")
+            colour, active = SUBTLE, False
         else:
-            state = battery or "Open the case nearby to see the battery"
+            # Last known battery even when they've gone quiet (the shaded Connect
+            # says they're out of range).
+            state = battery or ("Nearby" if pods.in_range else "Open the case nearby to connect")
             colour, active = SUBTLE, False
         row["icon"].config(image=self.icon_image("airpods", GOOD if pods.connected
                                                  else ACCENT if pods.connecting else SUBTLE))
@@ -1003,7 +1012,8 @@ class TrayApp:
         if active:
             button.set_style("Disconnect", (NEUTRAL, NEUTRAL_HOVER))
         else:
-            button.set_style("Connect", (ACCENT, ACCENT_HOVER))
+            # Shaded while they're out of range: connecting couldn't work.
+            button.set_style("Connect", (ACCENT, ACCENT_HOVER), enabled=pods.in_range)
         button.grid()
 
     def toggle_airpods(self) -> None:

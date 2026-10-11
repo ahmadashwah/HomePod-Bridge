@@ -47,6 +47,8 @@ PAIR_MEMORY = 15            # seconds an address counts as "recently seen" for t
 SCAN_SILENCE_RESTART = 30   # restart the Bluetooth scan if nothing at all is heard for this long
 MAX_SCAN_FAILURES = 5       # failed scan restarts in a row before the app relaunches itself
 HEARTBEAT_SECONDS = 600     # write an "alive" line to the log this often
+IN_RANGE_SECONDS = 20       # heard from them this recently = nearby, so Connect can work
+FAILED_MESSAGE_SECONDS = 6  # how long "Couldn't connect" shows before the battery alone
 
 
 def log(*parts) -> None:
@@ -144,6 +146,8 @@ class AirPodsEngine:
         self.disconnecting = False
         self.is_output = False           # the AirPods are Windows' current sound output
         self._endpoint_id: str | None = None
+        self.last_heard = 0.0            # last broadcast from our AirPods
+        self._failed_at = 0.0
 
         self.lid_counters: dict[str, int] = {}
         self.last_lid_open = 0.0
@@ -189,6 +193,12 @@ class AirPodsEngine:
     def request_disconnect(self) -> None:
         if self.loop:
             self.loop.call_soon_threadsafe(self.disconnect)
+
+    @property
+    def in_range(self) -> bool:
+        """Heard from them recently. In the closed case (in a bag, say) they're silent and
+        connecting can't work, so the flyout greys out Connect."""
+        return self.connected or time.monotonic() - self.last_heard < IN_RANGE_SECONDS
 
     def model_name(self) -> str:
         if self.state:
@@ -282,6 +292,9 @@ class AirPodsEngine:
         while not self.quitting:
             self._check_ears()
             self._check_lid_closed()
+            if self.connect_failed and time.monotonic() - self._failed_at > FAILED_MESSAGE_SECONDS:
+                self.connect_failed = False
+            self._changed()  # catches time-based changes (in range, failure message)
             await asyncio.sleep(0.05)
 
     # ---- state ----
@@ -289,7 +302,7 @@ class AirPodsEngine:
     def _changed(self) -> None:
         """Tell the app when something it shows changed (adverts arrive many times a second)."""
         signature = (self.model_name(), self.battery_text(), self.connected, self.connecting,
-                     self.disconnecting, self.connect_failed)
+                     self.disconnecting, self.connect_failed, self.in_range)
         if signature != self._last_signature:
             self._last_signature = signature
             self.on_event("changed")
@@ -365,6 +378,7 @@ class AirPodsEngine:
             return  # too far / lid closed and buds in a pocket / someone else's AirPods
 
         self.state = s
+        self.last_heard = time.monotonic()
         for part, value, charging in (("Left", s.left, s.left_charging), ("Right", s.right, s.right_charging),
                                       ("Case", s.case, s.case_charging)):
             if value is not None:
@@ -469,6 +483,7 @@ class AirPodsEngine:
             ok = False
         log("connect", "ok" if ok else "failed")
         self.connecting, self.connected, self.connect_failed = False, ok, not ok
+        self._failed_at = time.monotonic()
         if ok and make_output:
             self._endpoint_id = self._endpoint_id or airpods_endpoint_id(self.airpods.mac)
             if self._endpoint_id and default_output_id() != self._endpoint_id:
