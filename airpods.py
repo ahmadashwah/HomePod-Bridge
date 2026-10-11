@@ -196,9 +196,22 @@ class AirPodsEngine:
 
     @property
     def in_range(self) -> bool:
-        """Heard from them recently. In the closed case (in a bag, say) they're silent and
-        connecting can't work, so the flyout greys out Connect."""
-        return self.connected or time.monotonic() - self.last_heard < IN_RANGE_SECONDS
+        """Can Connect work right now? (The flyout greys it out when not.)
+
+        Needs them nearby (heard recently) and not both shut in the case: buds in a
+        closed case keep broadcasting for a while, but won't connect."""
+        if self.connected:
+            return True
+        now = time.monotonic()
+        if now - self.last_heard >= IN_RANGE_SECONDS:
+            return False
+        s = self.state
+        both_in_case = s is not None and s.left_in_case and s.right_in_case
+        # Open lid: since a "lid opened", or case broadcasts without the lid-closed bit
+        # (covers a case that was already open when the app started).
+        lid_open = self.lid_open or (now - self.case_seen_at < LID_CLOSED_AFTER
+                                     and not self.lid_closed_seen)
+        return lid_open or not both_in_case
 
     def model_name(self) -> str:
         if self.state:
