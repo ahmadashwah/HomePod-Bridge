@@ -43,6 +43,7 @@ from airpods import AirPodsEngine
 from audio_route import (
     DEVICE_NAME,
     AudioRoute,
+    active_outputs,
     default_output_id,
     ensure_cable_named,
     find_cable_output_id,
@@ -800,6 +801,7 @@ class TrayApp:
         self._pending_connect = False
         self._shown_by_lid = False
         self._shown_at = 0.0
+        self._last_output: str | None = None
 
         migrate_from_airpodstray(self.settings)
         self.airpods = AirPodsEngine(
@@ -1267,6 +1269,7 @@ class TrayApp:
         self.refresh_ui()
 
     def on_status(self, text: str) -> None:
+        _LOGGER.info("speaker status: %s", text)
         if text == "Refused" and self.connected_name:
             # Stop, put the sound back on the laptop, and say why.
             name = self.connected_name
@@ -1375,15 +1378,26 @@ class TrayApp:
                 self._cable_id = find_cable_output_id()  # VB-Cable just installed?
                 if self._cable_id:
                     self.sync_device_name()
-            on_cable = bool(self._cable_id) and default_output_id() == self._cable_id
+            current = default_output_id()
+            on_cable = bool(self._cable_id) and current == self._cable_id
+            if current != self._last_output:
+                # Every switch, whoever made it (you, Windows, this app), so a
+                # surprise switch can be traced afterwards.
+                names = {dev_id: name for _dev, dev_id, name in active_outputs()}
+                _LOGGER.info("Windows output: %s -> %s",
+                             names.get(self._last_output, self._last_output or "(start)"),
+                             names.get(current, current))
+                self._last_output = current
         except Exception as ex:
             _LOGGER.warning("Checking the Windows output failed (%s)", ex)
             on_cable = self._was_on_cable
         # Act on changes only, so the app's own Connect/Disconnect (which
         # switch the output themselves) don't trigger anything here.
         if on_cable and not self._was_on_cable and not self.bridge.connected:
+            _LOGGER.info("speaker device chosen in Windows - connecting")
             self.connect()
         elif not on_cable and self._was_on_cable and self.bridge.connected:
+            _LOGGER.info("Windows output moved away from the speaker - disconnecting")
             self.disconnect(switch_back=False)
         self._was_on_cable = on_cable
         self.root.after(500, self.watch_output)

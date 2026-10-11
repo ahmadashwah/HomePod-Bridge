@@ -113,7 +113,7 @@ def _enumerator():
     )
 
 
-def _active_outputs():
+def active_outputs():
     """(device, id, friendly name) for each enabled playback device."""
     devices = _enumerator().EnumAudioEndpoints(_E_RENDER, _DEVICE_STATE_ACTIVE)
     for i in range(devices.GetCount()):
@@ -146,7 +146,7 @@ def _is_cable(name: str) -> bool:
 
 def find_cable_output_id() -> str | None:
     """Endpoint id of VB-Cable's playback device, if installed."""
-    for _dev, dev_id, name in _active_outputs():
+    for _dev, dev_id, name in active_outputs():
         if _is_cable(name):
             return dev_id
     return None
@@ -154,7 +154,7 @@ def find_cable_output_id() -> str | None:
 
 def real_speaker_id() -> str | None:
     """First active playback device that isn't a virtual cable."""
-    for _dev, dev_id, name in _active_outputs():
+    for _dev, dev_id, name in active_outputs():
         name = name.lower()
         if "cable" not in name and "vb-audio" not in name:
             return dev_id
@@ -182,7 +182,7 @@ def hide_unused_cable_outputs() -> None:
     """Disable VB-Cable's "CABLE In 16ch" output, which the bridge never uses,
     so the sound menu only offers "HomePod". Same as Settings > Sound >
     (device) > Don't allow, and reversible there."""
-    for _dev, dev_id, name in _active_outputs():
+    for _dev, dev_id, name in active_outputs():
         name = name.lower()
         if CABLE_DRIVER_HINT in name and CABLE_SKIP_HINT in name:
             _policy().SetEndpointVisibility(dev_id, 0)
@@ -198,7 +198,7 @@ def ensure_cable_named(name: str = DEVICE_NAME) -> None:
 
 
 def _endpoint_volume(device_id: str):
-    for dev, dev_id, _name in _active_outputs():
+    for dev, dev_id, _name in active_outputs():
         if dev_id == device_id:
             iface = dev.Activate(IAudioEndpointVolume._iid_, comtypes.CLSCTX_ALL, None)
             return iface.QueryInterface(IAudioEndpointVolume)
