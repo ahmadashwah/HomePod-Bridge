@@ -152,6 +152,7 @@ class AirPodsEngine:
         self.last_heard = 0.0            # last broadcast from our AirPods
         self._failed_at = 0.0
         self.name: str | None = None     # e.g. "Ahmad's AirPods Pro", from Windows' pairing
+        self._handover = False           # disconnecting because another device took over
 
         self.lid_counters: dict[str, int] = {}
         self.last_lid_open = 0.0
@@ -194,8 +195,12 @@ class AirPodsEngine:
         if self.loop:
             self.loop.call_soon_threadsafe(self.connect, True)
 
-    def request_disconnect(self) -> None:
+    def request_disconnect(self, handover: bool = False) -> None:
+        """handover=True: the sound is moving to another device (one at a time), so
+        don't pause what's playing when they drop off."""
         if self.loop:
+            if handover:
+                self._handover = True
             self.loop.call_soon_threadsafe(self.disconnect)
 
     def request_make_output(self) -> None:
@@ -510,7 +515,10 @@ class AirPodsEngine:
         was_connected, self.connected = self.connected, connected
         self.disconnecting = False
         log("connected" if connected else "disconnected")
-        if was_connected and not connected and was_output:
+        handover, self._handover = self._handover, False
+        if handover and not connected:
+            log("  (handed over to another device - not pausing)")
+        elif was_connected and not connected and was_output:
             # Stop YouTube & co. carrying on through the PC speakers. Only when the AirPods were
             # the output: if a HomePod was playing, it keeps playing.
             self.paused_by_us = False
@@ -521,9 +529,9 @@ class AirPodsEngine:
         log("AirPods disconnected - pausing media")
         await pause_media()
 
-    def connect(self, make_output: bool = False) -> None:
-        """make_output: also switch Windows' output to the AirPods (a click in the list means
-        "play here", even if a HomePod is playing)."""
+    def connect(self, make_output: bool = True) -> None:
+        """make_output: also switch Windows' output to the AirPods. Always, so there's one
+        device at a time: a HomePod that's playing steps aside when the AirPods connect."""
         if self.connecting or not self.airpods:
             return
         self.connecting, self.connect_failed = True, False

@@ -1335,6 +1335,10 @@ class TrayApp:
         self.status_text = "Connecting..."
         self.sync_device_name()
         routed = self.bridge.connect(conf)
+        # One device at a time: playing on a speaker disconnects the AirPods.
+        if self.airpods.paired and (self.airpods.connected or self.airpods.connecting):
+            _LOGGER.info("playing on %s - disconnecting the AirPods", conf.name)
+            self.airpods.request_disconnect(handover=True)
         if routed:
             self.notice = None
             self._last_volume = self.bridge.volume
