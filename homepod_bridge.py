@@ -645,6 +645,14 @@ def device_kind(conf) -> str:
     return "speaker"
 
 
+def airpods_kind(model: str) -> str:
+    """Icon for an AirPods model name ("AirPods Pro 3", "AirPods Max"...)."""
+    model = model.lower()
+    if "max" in model or "solo" in model:
+        return "headphones"
+    return "airpods_pro" if "pro" in model else "airpods"
+
+
 def _hex_rgb(color: str) -> tuple[int, int, int]:
     return tuple(int(color[i:i + 2], 16) for i in (1, 3, 5))
 
@@ -662,12 +670,31 @@ def device_icon(kind: str, color: str, size: int) -> Image.Image:
     def u(*values):  # coordinates in 0..100 units
         return [round(v * s / 100) for v in values]
 
-    if kind == "airpods":
-        for cx, tilt in ((34, -1), (66, 1)):  # two buds: round head + stem
+    if kind == "airpods_pro":
+        for side in (0, 1):  # mirror image for the right bud
+            flip = (lambda x: x) if side == 0 else (lambda x: 100 - x)
+
+            def box(x0, y0, x1, y1):
+                a, b = sorted((flip(x0), flip(x1)))
+                return u(a, y0, b, y1)
+
+            # short stem, angling outwards towards the bottom
+            d.polygon([tuple(u(flip(x), y)) for x, y in ((17, 46), (31, 46), (25, 80), (13, 80))],
+                      fill=fill)
+            d.ellipse(box(12, 74, 25, 87), fill=fill)  # rounded stem end
+            d.ellipse(box(6, 20, 40, 54), fill=fill)  # big rounded head
+            d.ellipse(box(25, 9, 45, 29), fill=cut)  # ear tip, set off by a thin gap
+            d.ellipse(box(27, 11, 43, 27), fill=fill)
+    elif kind == "airpods":  # classic AirPods: small heads, long stems
+        for cx, tilt in ((34, -1), (66, 1)):
             d.ellipse(u(cx - 13, 14, cx + 13, 42), fill=fill)
             d.rounded_rectangle(u(cx - 5 + 4 * tilt, 32, cx + 5 + 4 * tilt, 86),
                                 radius=s * 5 // 100, fill=fill)
             d.ellipse(u(cx - 5 - 3 * tilt, 22, cx + 3 - 3 * tilt, 30), fill=cut)  # speaker grille
+    elif kind == "headphones":  # AirPods Max, Beats Solo
+        d.arc(u(14, 8, 86, 80), 180, 360, fill=fill, width=s * 9 // 100)  # headband
+        for x0 in (8, 70):
+            d.rounded_rectangle(u(x0, 40, x0 + 22, 84), radius=s * 9 // 100, fill=fill)
     elif kind == "homepod_mini":
         d.ellipse(u(14, 18, 86, 90), fill=fill)  # sphere
         d.ellipse(u(30, 21, 70, 33), fill=cut)  # flat top
@@ -693,14 +720,19 @@ def device_icon(kind: str, color: str, size: int) -> Image.Image:
     return img.resize((size, size), Image.LANCZOS)
 
 
-def tray_image(active: bool) -> Image.Image:
-    """A small HomePod silhouette; lit blue on top while playing."""
+def tray_image(kind: str | None) -> Image.Image:
+    """The device the sound is going to (its icon, with a green "connected" dot),
+    or the app's own HomePod silhouette when nothing is connected."""
     size = 64
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    if kind is None:
+        img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        draw.rounded_rectangle((10, 4, 54, 60), radius=20, fill=(235, 235, 240, 255))
+        draw.ellipse((18, 9, 46, 23), fill=(120, 120, 128, 255))
+        return img
+    img = device_icon(kind, "#ebebf0", size)
     draw = ImageDraw.Draw(img)
-    draw.rounded_rectangle((10, 4, 54, 60), radius=20, fill=(235, 235, 240, 255))
-    top = (10, 132, 255, 255) if active else (120, 120, 128, 255)
-    draw.ellipse((18, 9, 46, 23), fill=top)
+    draw.ellipse((40, 40, 63, 63), fill=(48, 209, 88, 255), outline=(28, 28, 30, 255), width=4)
     return img
 
 
@@ -789,7 +821,7 @@ class TrayApp:
         self.build_flyout()
         self.icon = pystray.Icon(
             "HomePodBridge",
-            tray_image(False),
+            tray_image(None),
             "HomePod Bridge",
             menu=pystray.Menu(
                 # Hidden default item: what a left click on the icon does.
@@ -1011,8 +1043,9 @@ class TrayApp:
             state = line(model, battery, hint) or "Nearby"
             state = state[0].upper() + state[1:]
             colour, active = SUBTLE, False
-        row["icon"].config(image=self.icon_image("airpods", GOOD if pods.connected
-                                                 else ACCENT if pods.connecting else SUBTLE))
+        row["icon"].config(image=self.icon_image(
+            airpods_kind(pods.model_name()),
+            GOOD if pods.connected else ACCENT if pods.connecting else SUBTLE))
         row["title"].config(text=pods.display_name(), fg=FG)
         row["state"].config(text=state, fg=colour)
         button = row["button"]
@@ -1136,9 +1169,15 @@ class TrayApp:
     def icon_state(self, active: bool) -> None:
         if not hasattr(self, "icon"):
             return  # first refresh happens before the tray icon is created
-        if getattr(self, "_icon_active", None) != active:
-            self._icon_active = active
-            self.icon.icon = tray_image(active)
+        # Icon = where the sound goes: the speaker we stream to, else connected AirPods.
+        kind = None
+        if active and self.connected_name in self.devices:
+            kind = device_kind(self.devices[self.connected_name])
+        elif self.airpods.paired and self.airpods.connected:
+            kind = airpods_kind(self.airpods.model_name())
+        if getattr(self, "_icon_kind", "unset") != kind:
+            self._icon_kind = kind
+            self.icon.icon = tray_image(kind)
         # Tooltip: what's playing where, and the AirPods battery (like AirPodsTray's).
         lines = [f"Playing on {self.connected_name}" if active else APP_NAME]
         if self.airpods.paired:
