@@ -19,6 +19,9 @@ PyInstaller.__main__.run([
     "--collect-submodules", "pycaw",
     "--hidden-import", "comtypes.stream",
     "--hidden-import", "pystray._win32",
+    # AirPods: Bluetooth LE scanning and Windows media control
+    "--collect-submodules", "bleak",
+    "--collect-submodules", "winrt",
     "--workpath", work,
     "--specpath", work,
     "--distpath", os.environ.get("HB_DIST", os.path.join(here, "dist")),

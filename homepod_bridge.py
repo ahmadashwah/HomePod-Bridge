@@ -15,12 +15,14 @@ import json
 import logging
 import os
 import queue
+import subprocess
 import sys
 import threading
 import time
 import tkinter as tk
 import winreg
 from collections import deque
+from pathlib import Path
 
 import numpy as np
 import pystray
@@ -37,6 +39,7 @@ from pyatv.protocols.raop.protocols import StreamContext, TimingServer, airplayv
 from pyatv.protocols.raop.audio_source import AudioSource
 
 import updater
+from airpods import AirPodsEngine
 from audio_route import (
     DEVICE_NAME,
     AudioRoute,
@@ -47,7 +50,8 @@ from audio_route import (
 
 _LOGGER = logging.getLogger("homepod_bridge")
 
-APP_VERSION = "1.0.4"
+APP_NAME = "HomePod Bridge"
+APP_VERSION = "1.1.0"
 UPDATE_REPO = "ahmadashwah/HomePod-Bridge"  # GitHub releases carry the exe
 
 # MessageBoxW flags / results
@@ -571,6 +575,36 @@ def set_autostart(enabled: bool) -> None:
                 pass
 
 
+def migrate_from_airpodstray(settings: dict) -> None:
+    """AirPodsTray now lives in this app. Ask a running copy to quit (its --quit
+    event), and the first time, take over its Start-with-Windows entry and its
+    auto-connect setting."""
+    event = ctypes.windll.kernel32.OpenEventW(0x0002, False, "Local\\AirPodsTray-quit")
+    if event:  # only exists while AirPodsTray runs
+        ctypes.windll.kernel32.SetEvent(event)
+        ctypes.windll.kernel32.CloseHandle(event)
+        _LOGGER.info("asked the old AirPodsTray to quit")
+    if settings.get("airpods_migrated"):
+        return
+    try:
+        old = json.loads(Path(os.environ["APPDATA"], "AirPodsTray", "settings.json").read_text())
+        settings["airpods_auto_connect"] = bool(old.get("auto_connect", False))
+    except (OSError, ValueError):
+        pass
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _RUN_KEY, 0,
+                            winreg.KEY_READ | winreg.KEY_SET_VALUE) as key:
+            winreg.QueryValueEx(key, "AirPodsTray")
+            winreg.DeleteValue(key, "AirPodsTray")
+            if not autostart_enabled():
+                set_autostart(True)
+            _LOGGER.info("moved AirPodsTray's Start with Windows to this app")
+    except OSError:
+        pass  # AirPodsTray didn't start with Windows
+    settings["airpods_migrated"] = True
+    save_settings(settings)
+
+
 def resource_path(name: str) -> str:
     """Path to a bundled file, both from source and inside the PyInstaller exe."""
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
@@ -589,6 +623,8 @@ ROW_HOVER = "#2d2d2d"
 DIVIDER = "#333333"
 # Speaker icon from Windows 11's own icon font.
 ICON_FONT = "Segoe Fluent Icons"
+AIRPODS_ROW = "\0airpods"  # key of the AirPods row (can't clash with a speaker name)
+LID_FLYOUT_SECONDS = 20  # a flyout the AirPods case opened closes by itself after this
 SPEAKER_GLYPH = "\ue7f5"
 REFRESH_GLYPH = "\ue72c"
 FONT = "Segoe UI"
@@ -624,7 +660,13 @@ def device_icon(kind: str, color: str, size: int) -> Image.Image:
     def u(*values):  # coordinates in 0..100 units
         return [round(v * s / 100) for v in values]
 
-    if kind == "homepod_mini":
+    if kind == "airpods":
+        for cx, tilt in ((34, -1), (66, 1)):  # two buds: round head + stem
+            d.ellipse(u(cx - 13, 14, cx + 13, 42), fill=fill)
+            d.rounded_rectangle(u(cx - 5 + 4 * tilt, 32, cx + 5 + 4 * tilt, 86),
+                                radius=s * 5 // 100, fill=fill)
+            d.ellipse(u(cx - 5 - 3 * tilt, 22, cx + 3 - 3 * tilt, 30), fill=cut)  # speaker grille
+    elif kind == "homepod_mini":
         d.ellipse(u(14, 18, 86, 90), fill=fill)  # sphere
         d.ellipse(u(30, 21, 70, 33), fill=cut)  # flat top
         d.ellipse(u(36, 24, 64, 30), fill=fill)
@@ -719,6 +761,14 @@ class TrayApp:
         self._cable_id: str | None = None
         self._was_on_cable = False
         self._pending_connect = False
+        self._shown_by_lid = False
+        self._shown_at = 0.0
+
+        migrate_from_airpodstray(self.settings)
+        self.airpods = AirPodsEngine(
+            lambda *event: self.events.put(("airpods", *event)),
+            auto_connect=self.settings.get("airpods_auto_connect", False),
+        )
 
         # VB-Cable shows up in Windows' sound menus as "HomePod"; picking it
         # there is how the user connects (see watch_output).
@@ -744,6 +794,12 @@ class TrayApp:
                     "Check for updates", lambda: self.events.put(("update",)),
                 ),
                 pystray.MenuItem(
+                    "Auto-connect AirPods (case opens or a bud goes in)",
+                    lambda: self.events.put(("airpods_auto_connect",)),
+                    checked=lambda _i: self.airpods.auto_connect,
+                    visible=self.airpods.paired,
+                ),
+                pystray.MenuItem(
                     "Start with Windows",
                     lambda: self.events.put(("autostart",)),
                     checked=lambda _i: autostart_enabled(),
@@ -753,6 +809,10 @@ class TrayApp:
             ),
         )
         self.icon.run_detached()
+        self.airpods.start()
+        # Clicking into a flyout the case opened means you're using it: keep it open.
+        self.root.bind_all("<Button-1>", lambda _e: setattr(self, "_shown_by_lid", False),
+                           add="+")
         self.root.after(50, self.pump_events)
         self.scan()
         self.root.after(400, self.show)
@@ -773,7 +833,7 @@ class TrayApp:
         header = tk.Frame(card, bg=BG)
         header.grid(row=0, column=0, columnspan=2, sticky="ew")
         header.columnconfigure(0, weight=1)
-        tk.Label(header, text="AirPlay speakers", bg=BG, fg=FG,
+        tk.Label(header, text="Sound", bg=BG, fg=FG,
                  font=(FONT, 14, "bold"), anchor="w").grid(row=0, column=0, sticky="w")
         # Search again: a refresh icon, left of the close button.
         self.refresh_icon = tk.Label(header, text=REFRESH_GLYPH, bg=BG,
@@ -828,26 +888,32 @@ class TrayApp:
 
         # Rows are created once per speaker and then only updated: destroying and
         # recreating them left see-through holes in the flyout for a frame.
-        names = tuple(self.devices)
+        # One list: the AirPods (when paired with this PC) first, then AirPlay speakers.
+        names = ((AIRPODS_ROW,) if self.airpods.paired else ()) + tuple(self.devices)
         if names != self._shown_rows:
             self._shown_rows = names
             for child in self.list_frame.winfo_children():
                 child.destroy()
             self.rows = {
-                name: self.build_device_row(row, name)
+                name: self.build_device_row(
+                    row, self.toggle_airpods if name == AIRPODS_ROW
+                    else lambda n=name: self.toggle_device(n)
+                )
                 for row, name in enumerate(names)
             }
+        if self.airpods.paired:
+            self.update_airpods_row(self.rows[AIRPODS_ROW])
         for name, conf in self.devices.items():
             self.update_device_row(self.rows[name], conf)
         # An emptied Tk frame keeps its old height, so hide it instead.
-        if self.devices:
+        if names:
             self.list_frame.grid()
         else:
             self.list_frame.grid_remove()
 
         if self.notice:
             self.hint.config(text=self.notice)
-        elif not self.devices and not self.scanning:
+        elif not names and not self.scanning:
             self.hint.config(text="No speakers found. Make sure this PC is on the "
                                   "same Wi-Fi as your HomePod, then search again.")
         else:
@@ -898,21 +964,54 @@ class TrayApp:
         self.draw_divider()
         self._dots_job = self.root.after(16, self.animate_dots)  # ~60 fps
 
-    def build_device_row(self, row: int, name: str) -> dict:
+    def build_device_row(self, row: int, on_button) -> dict:
         frame = tk.Frame(self.list_frame, bg=BG, padx=self.px(8), pady=self.px(8))
         frame.grid(row=row, column=0, sticky="ew")
         frame.columnconfigure(1, weight=1)
         icon = tk.Label(frame, bg=BG)
         icon.grid(row=0, column=0, rowspan=2, padx=(0, self.px(12)))
-        title = tk.Label(frame, text=name, bg=BG, font=(FONT, 11, "bold"), anchor="w")
+        title = tk.Label(frame, bg=BG, font=(FONT, 11, "bold"), anchor="w")
         title.grid(row=0, column=1, sticky="w")
         state = tk.Label(frame, bg=BG, font=(FONT, 9), anchor="w", justify="left")
         state.grid(row=1, column=1, sticky="w")
         # Fixed width so "Connect" <-> "Disconnect" doesn't shift the row.
-        button = FlatButton(frame, lambda: self.toggle_device(name), fg=FG,
+        button = FlatButton(frame, on_button, fg=FG,
                             font=(FONT, 10, "bold"), width=10, pady=self.px(5))
         button.grid(row=0, column=2, rowspan=2, padx=(self.px(12), 0))
         return {"icon": icon, "title": title, "state": state, "button": button}
+
+    def update_airpods_row(self, row: dict) -> None:
+        pods = self.airpods
+        battery = pods.battery_text()
+        if pods.connecting:
+            state, colour, active = "Connecting...", ACCENT, True
+        elif pods.disconnecting:
+            state, colour, active = "Disconnecting...", SUBTLE, True
+        elif pods.connected:
+            state = "Connected" + (f"   {battery}" if battery else "")
+            colour, active = GOOD, True
+        elif pods.connect_failed:
+            state, colour, active = "Couldn't connect - in use by your phone?", SUBTLE, False
+        else:
+            state = battery or "Open the case nearby to see the battery"
+            colour, active = SUBTLE, False
+        row["icon"].config(image=self.icon_image("airpods", GOOD if pods.connected
+                                                 else ACCENT if pods.connecting else SUBTLE))
+        row["title"].config(text=pods.model_name(), fg=FG)
+        row["state"].config(text=state, fg=colour)
+        button = row["button"]
+        if active:
+            button.set_style("Disconnect", (NEUTRAL, NEUTRAL_HOVER))
+        else:
+            button.set_style("Connect", (ACCENT, ACCENT_HOVER))
+        button.grid()
+
+    def toggle_airpods(self) -> None:
+        self._shown_by_lid = False  # the user is using the flyout; let it stay
+        if self.airpods.connected or self.airpods.connecting:
+            self.airpods.request_disconnect()
+        else:
+            self.airpods.request_connect()
 
     def update_device_row(self, row: dict, conf) -> None:
         is_active = self.bridge.connected and conf.name == self.connected_name
@@ -926,7 +1025,7 @@ class TrayApp:
             state, dot = speaker_model(conf), SUBTLE
 
         row["icon"].config(image=self.icon_image(device_kind(conf), dot))
-        row["title"].config(fg=SUBTLE if blocked else FG)
+        row["title"].config(text=conf.name, fg=SUBTLE if blocked else FG)
         row["state"].config(text=state,
                             fg=GOOD if is_active and self.playing else SUBTLE)
         button = row["button"]
@@ -960,7 +1059,14 @@ class TrayApp:
         margin = self.px(12)
         self.root.geometry(f"+{right - w - margin}+{bottom - h - margin}")
 
-    def show(self) -> None:
+    def show(self, from_lid: bool = False) -> None:
+        """from_lid: opened because the AirPods case opened. Then it doesn't take the
+        keyboard focus from what you're doing, closes again with the lid, and goes
+        away by itself after a while - unless you click into it."""
+        if from_lid and self.visible and not self._shown_by_lid:
+            return  # already open because you opened it; leave it be
+        self._shown_by_lid = from_lid
+        self._shown_at = time.monotonic()
         if not self.devices and not self.scanning:
             self.scan()
         elif not self.bridge.connected and time.monotonic() - self.last_scan > 60:
@@ -969,13 +1075,22 @@ class TrayApp:
         self.root.deiconify()
         self.root.lift()
         self.round_corners()
-        self.root.focus_force()
+        if not from_lid:
+            self.root.focus_force()
         self.visible = True
+        if from_lid:
+            self.root.after(LID_FLYOUT_SECONDS * 1000, self._hide_lid_flyout)
+
+    def _hide_lid_flyout(self) -> None:
+        if (self.visible and self._shown_by_lid
+                and time.monotonic() - self._shown_at >= LID_FLYOUT_SECONDS - 0.5):
+            self.hide()
 
     def hide(self) -> None:
         if self.visible:
             self.root.withdraw()
             self.visible = False
+            self._shown_by_lid = False
             self._hidden_at = time.monotonic()
 
     def toggle_flyout(self) -> None:
@@ -1007,10 +1122,17 @@ class TrayApp:
         if getattr(self, "_icon_active", None) != active:
             self._icon_active = active
             self.icon.icon = tray_image(active)
-            self.icon.title = (
-                f"HomePod Bridge - playing on {self.selected}" if active
-                else "HomePod Bridge"
-            )
+        # Tooltip: what's playing where, and the AirPods battery (like AirPodsTray's).
+        lines = [f"Playing on {self.connected_name}" if active else APP_NAME]
+        if self.airpods.paired:
+            battery = self.airpods.battery_text()
+            pods = self.airpods.model_name()
+            lines.append(f"{pods}: {battery}" if battery else
+                         f"{pods}: connected" if self.airpods.connected else "")
+        title = "\n".join(line for line in lines if line)[:127]
+        if title != getattr(self, "_icon_title", None):
+            self._icon_title = title
+            self.icon.title = title
 
     # ----- actions ----------------------------------------------------------
 
@@ -1030,6 +1152,12 @@ class TrayApp:
                     set_autostart(not autostart_enabled())
                 elif kind == "update":
                     self.check_for_updates()
+                elif kind == "airpods":
+                    self.on_airpods_event(*event[1:])
+                elif kind == "airpods_auto_connect":
+                    self.airpods.auto_connect = not self.airpods.auto_connect
+                    self.settings["airpods_auto_connect"] = self.airpods.auto_connect
+                    save_settings(self.settings)
                 elif kind == "quit":
                     self.quit()
                     return
@@ -1209,6 +1337,29 @@ class TrayApp:
                 self.bridge.set_volume(volume)
         self.root.after(200, self.poll_windows_volume)
 
+    def on_airpods_event(self, kind: str, *args) -> None:
+        if kind == "changed":
+            self.refresh_ui()
+        elif kind == "lid_opened":
+            self.show(from_lid=True)
+        elif kind == "lid_closed":
+            if self.visible and self._shown_by_lid:
+                self.hide()
+        elif kind == "low_battery":
+            self.icon.notify(args[0], "AirPods battery low")
+        elif kind == "relaunch":
+            self.relaunch("Bluetooth scanning keeps failing")
+
+    def relaunch(self, reason: str) -> None:
+        """Start a fresh copy and quit this one (it waits for us to exit)."""
+        _LOGGER.info("%s - relaunching the app", reason)
+        command = ([sys.executable] if getattr(sys, "frozen", False)
+                   else [sys.executable, os.path.abspath(__file__)])
+        # A one-file exe started from a running one must not reuse our unpack folder.
+        env = dict(os.environ, PYINSTALLER_RESET_ENVIRONMENT="1")
+        subprocess.Popen(command + [updater.AFTER_UPDATE_FLAG], env=env, close_fds=True)
+        self.quit()
+
     def check_for_updates(self, unattended: bool = False) -> None:
         """unattended=True (HB_UPDATE_SELFTEST only) installs without asking."""
         if self._updating:
@@ -1254,6 +1405,7 @@ class TrayApp:
         threading.Thread(target=work, daemon=True).start()
 
     def quit(self) -> None:
+        self.airpods.stop()
         if self.bridge.connected:
             self.bridge.disconnect(wait=True)
         self.settings["volume"] = round(self.bridge.volume)

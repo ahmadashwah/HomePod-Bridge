@@ -6,4 +6,8 @@ pycaw
 comtypes
 pystray
 pillow
+# AirPods
+bleak>=0.22
+winrt-Windows.Media.Control==3.2.1
+# only needed to build the .exe
 pyinstaller

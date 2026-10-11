@@ -1,11 +1,15 @@
 # HomePod Bridge
 
-Play your Windows PC's sound on a HomePod (or any AirPlay 2 speaker, including
-a Mac with AirPlay Receiver turned on).
+Your Apple audio devices on Windows, from one tray icon:
 
-Windows can't speak AirPlay, so HomePod Bridge sits in the system tray and
-streams everything your PC plays to the speaker: lossless (ALAC), with about
-half a second of delay.
+- **HomePod and AirPlay speakers:** play your PC's sound on a HomePod (or any
+  AirPlay 2 speaker, including a Mac with AirPlay Receiver turned on). Windows
+  can't speak AirPlay, so HomePod Bridge streams everything your PC plays to the
+  speaker: lossless (ALAC), with about half a second of delay.
+- **AirPods** (formerly the separate AirPodsTray app): battery for each bud and
+  the case, connect / disconnect, the list pops up when you open the case near
+  the PC, media pauses when you take a bud out and resumes when it goes back in,
+  and low-battery warnings.
 
 ## Install
 
@@ -31,6 +35,17 @@ half a second of delay.
 
 If someone else AirPlays to the speaker, HomePod Bridge steps aside and gives
 your laptop its sound back.
+
+**AirPods** appear at the top of the same list once they're paired with
+Windows (*Settings > Bluetooth & devices > Add device*, with the case button held
+until the light flashes white). Open the case near the PC to see the battery.
+Connecting them makes them the sound output; taking both buds out disconnects
+them and pauses what was playing. Auto-pause only acts while the AirPods are the
+output, so a HomePod that's playing is left alone. *Auto-connect AirPods* (in
+the right-click menu) connects them as soon as you open the case or put a bud in.
+
+If you used AirPodsTray, this app replaces it: on first start it closes
+AirPodsTray and takes over its *Start with Windows* and auto-connect settings.
 
 ## Requirements
 
@@ -60,7 +75,13 @@ The app's *Check for updates* installs the newest release that has
 
 ## How it works
 
-Audio is captured from VB-Cable (or the default speakers' loopback), resampled
+**AirPods** battery, lid and in-ear state come from the Bluetooth LE
+"proximity pairing" broadcasts AirPods send (no connection needed); decoding is
+in `airpods_scanner.py`. Connecting uses the Windows Bluetooth audio driver's
+one-shot reconnect, like the Connect button in Windows settings
+(`auto_connect.py`). `airpods.py` ties it together on its own thread.
+
+**AirPlay** audio is captured from VB-Cable (or the default speakers' loopback), resampled
 to 44.1 kHz and sent with [pyatv](https://pyatv.dev) as uncompressed ALAC
 frames, which HomePods handle more reliably than pyatv's raw PCM mode. pyatv's
 default 1.5 s playback delay is lowered to 0.5 s, the measured minimum that
