@@ -678,13 +678,12 @@ def device_icon(kind: str, color: str, size: int) -> Image.Image:
                 a, b = sorted((flip(x0), flip(x1)))
                 return u(a, y0, b, y1)
 
-            # short stem, angling outwards towards the bottom
-            d.polygon([tuple(u(flip(x), y)) for x, y in ((17, 46), (31, 46), (25, 80), (13, 80))],
-                      fill=fill)
-            d.ellipse(box(12, 74, 25, 87), fill=fill)  # rounded stem end
-            d.ellipse(box(6, 20, 40, 54), fill=fill)  # big rounded head
-            d.ellipse(box(25, 9, 45, 29), fill=cut)  # ear tip, set off by a thin gap
-            d.ellipse(box(27, 11, 43, 27), fill=fill)
+            # Facing each other, like the iPhone's AirPods Pro symbol: stem straight
+            # down on the outer side, ear tip pointing at the other bud.
+            d.rounded_rectangle(box(7, 38, 20, 86), radius=s * 6 // 100, fill=fill)
+            d.ellipse(box(3, 18, 35, 50), fill=fill)  # head
+            d.ellipse(box(28, 23, 44, 45), fill=cut)  # ear tip, set off by a thin gap
+            d.ellipse(box(30, 25, 42, 43), fill=fill)
     elif kind == "airpods":  # classic AirPods: small heads, long stems
         for cx, tilt in ((34, -1), (66, 1)):
             d.ellipse(u(cx - 13, 14, cx + 13, 42), fill=fill)
@@ -732,7 +731,7 @@ def tray_image(kind: str | None) -> Image.Image:
         return img
     img = device_icon(kind, "#ebebf0", size)
     draw = ImageDraw.Draw(img)
-    draw.ellipse((40, 40, 63, 63), fill=(48, 209, 88, 255), outline=(28, 28, 30, 255), width=4)
+    draw.ellipse((45, 45, 63, 63), fill=(48, 209, 88, 255), outline=(28, 28, 30, 255), width=3)
     return img
 
 
