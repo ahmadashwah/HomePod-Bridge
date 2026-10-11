@@ -1031,6 +1031,9 @@ class TrayApp:
             state, colour, active = "Connecting...", ACCENT, True
         elif pods.disconnecting:
             state, colour, active = "Disconnecting...", SUBTLE, True
+        elif pods.connected and not pods.is_output:
+            # Bluetooth still connected, but the sound goes elsewhere (e.g. a HomePod).
+            state, colour, active = line("Connected, not in use", battery), SUBTLE, False
         elif pods.connected:
             state, colour, active = line("Connected", battery), GOOD, True
         elif pods.connect_failed:
@@ -1042,14 +1045,17 @@ class TrayApp:
             state = line(model, battery, hint) or "Nearby"
             state = state[0].upper() + state[1:]
             colour, active = SUBTLE, False
+        playing_here = pods.connected and pods.is_output
         row["icon"].config(image=self.icon_image(
             airpods_kind(pods.model_name()),
-            GOOD if pods.connected else ACCENT if pods.connecting else SUBTLE))
+            GOOD if playing_here else ACCENT if pods.connecting else SUBTLE))
         row["title"].config(text=pods.display_name(), fg=FG)
         row["state"].config(text=state, fg=colour)
         button = row["button"]
         if active:
             button.set_style("Disconnect", (NEUTRAL, NEUTRAL_HOVER))
+        elif pods.connected:
+            button.set_style("Use", (ACCENT, ACCENT_HOVER))  # play on them again
         else:
             # Shaded while they're out of range: connecting couldn't work.
             button.set_style("Connect", (ACCENT, ACCENT_HOVER), enabled=pods.in_range)
@@ -1057,10 +1063,13 @@ class TrayApp:
 
     def toggle_airpods(self) -> None:
         self._shown_by_lid = False  # the user is using the flyout; let it stay
-        if self.airpods.connected or self.airpods.connecting:
-            self.airpods.request_disconnect()
+        pods = self.airpods
+        if pods.connected and not pods.is_output and not pods.disconnecting:
+            pods.request_make_output()  # "Use": the HomePod steps aside by itself
+        elif pods.connected or pods.connecting:
+            pods.request_disconnect()
         else:
-            self.airpods.request_connect()
+            pods.request_connect()
 
     def update_device_row(self, row: dict, conf) -> None:
         is_active = self.bridge.connected and conf.name == self.connected_name
@@ -1172,7 +1181,7 @@ class TrayApp:
         kind = None
         if active and self.connected_name in self.devices:
             kind = device_kind(self.devices[self.connected_name])
-        elif self.airpods.paired and self.airpods.connected:
+        elif self.airpods.paired and self.airpods.connected and self.airpods.is_output:
             kind = airpods_kind(self.airpods.model_name())
         if getattr(self, "_icon_kind", "unset") != kind:
             self._icon_kind = kind

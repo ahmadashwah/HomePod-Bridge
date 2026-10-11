@@ -198,6 +198,23 @@ class AirPodsEngine:
         if self.loop:
             self.loop.call_soon_threadsafe(self.disconnect)
 
+    def request_make_output(self) -> None:
+        """Connected but idle (the sound went elsewhere): play on them again."""
+        if self.loop:
+            self.loop.call_soon_threadsafe(self._make_output)
+
+    def _make_output(self) -> None:
+        self._endpoint_id = self._endpoint_id or airpods_endpoint_id(self.airpods.mac)
+        if not self._endpoint_id:
+            return
+        try:
+            set_default_output(self._endpoint_id)
+            self.is_output = True
+            log("made the AirPods the sound output")
+        except Exception as e:
+            log("couldn't switch the output to the AirPods:", repr(e))
+        self._changed()
+
     @property
     def in_range(self) -> bool:
         """Can Connect work right now? (The flyout greys it out when not.)
@@ -339,7 +356,7 @@ class AirPodsEngine:
     def _changed(self) -> None:
         """Tell the app when something it shows changed (adverts arrive many times a second)."""
         signature = (self.display_name(), self.model_name(), self.battery_text(),
-                     self.connected, self.connecting,
+                     self.connected, self.is_output, self.connecting,
                      self.disconnecting, self.connect_failed, self.in_range)
         if signature != self._last_signature:
             self._last_signature = signature
@@ -530,14 +547,8 @@ class AirPodsEngine:
         log("connect", "ok" if ok else "failed")
         self.connecting, self.connected, self.connect_failed = False, ok, not ok
         self._failed_at = time.monotonic()
-        if ok and make_output:
-            self._endpoint_id = self._endpoint_id or airpods_endpoint_id(self.airpods.mac)
-            if self._endpoint_id and default_output_id() != self._endpoint_id:
-                try:
-                    set_default_output(self._endpoint_id)
-                    log("made the AirPods the sound output")
-                except Exception as e:
-                    log("couldn't switch the output to the AirPods:", repr(e))
+        if ok and make_output and not self._output_check():
+            self._make_output()
         self._changed()
 
     def disconnect(self) -> None:
