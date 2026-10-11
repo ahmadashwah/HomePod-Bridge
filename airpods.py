@@ -49,6 +49,8 @@ MAX_SCAN_FAILURES = 5       # failed scan restarts in a row before the app relau
 HEARTBEAT_SECONDS = 600     # write an "alive" line to the log this often
 IN_RANGE_SECONDS = 20       # heard from them this recently = nearby, so Connect can work
 FAILED_MESSAGE_SECONDS = 6  # how long "Couldn't connect" shows before the battery alone
+CONNECT_ATTEMPTS = 2        # ask the AirPods to connect this many times before giving up
+CONNECT_TIMEOUT = 8         # seconds to wait for each attempt
 
 
 def log(*parts) -> None:
@@ -489,11 +491,19 @@ class AirPodsEngine:
         self.loop.create_task(self._connect(make_output))
 
     async def _connect(self, make_output: bool) -> None:
-        log("connecting...")
-        try:
-            ok = await self.airpods.connect()
-        except OSError:
-            ok = False
+        # Right after the case opens the AirPods are still waking up and reconnecting to the
+        # last device (usually the phone), and tend to ignore the first request; asking again
+        # works (seen in the log: 10 s timeout, then a manual retry connected in 4 s).
+        ok = False
+        for attempt in range(1, CONNECT_ATTEMPTS + 1):
+            log(f"connecting... (attempt {attempt})")
+            try:
+                ok = await self.airpods.connect(timeout=CONNECT_TIMEOUT)
+            except OSError as e:
+                log("connect request failed:", e)
+                ok = False
+            if ok or self.quitting:
+                break
         log("connect", "ok" if ok else "failed")
         self.connecting, self.connected, self.connect_failed = False, ok, not ok
         self._failed_at = time.monotonic()
