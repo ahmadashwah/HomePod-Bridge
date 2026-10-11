@@ -24,6 +24,7 @@ import winreg
 
 import comtypes
 from bleak import BleakScanner
+from winrt.windows.devices.bluetooth import BluetoothDevice
 from winrt.windows.media.control import (
     GlobalSystemMediaTransportControlsSessionManager as MediaManager,
     GlobalSystemMediaTransportControlsSessionPlaybackStatus as PlaybackStatus,
@@ -150,6 +151,7 @@ class AirPodsEngine:
         self._endpoint_id: str | None = None
         self.last_heard = 0.0            # last broadcast from our AirPods
         self._failed_at = 0.0
+        self.name: str | None = None     # e.g. "Ahmad's AirPods Pro", from Windows' pairing
 
         self.lid_counters: dict[str, int] = {}
         self.last_lid_open = 0.0
@@ -215,6 +217,10 @@ class AirPodsEngine:
                                      and not self.lid_closed_seen)
         return lid_open or not both_in_case
 
+    def display_name(self) -> str:
+        """Your AirPods' own name, or the model if Windows doesn't know one."""
+        return self.name or self.model_name()
+
     def model_name(self) -> str:
         if self.state:
             return self.state.model
@@ -249,7 +255,8 @@ class AirPodsEngine:
         if not self.airpods:
             log("no paired AirPods found - AirPods features are off")
             return
-        log(f"AirPods: {self.model_name()} ({self.airpods.mac:012X})")
+        await self._load_name()
+        log(f"AirPods: {self.display_name()}, {self.model_name()} ({self.airpods.mac:012X})")
         jobs = [self.loop.create_task(self._keep_running(self._watch_connection, "connection watcher")),
                 self.loop.create_task(self._keep_running(self.playing.run, "media tracker")),
                 self.loop.create_task(self._keep_running(self._tick, "ear/lid watcher"))]
@@ -268,6 +275,21 @@ class AirPodsEngine:
                 await asyncio.sleep(2)
         for job in jobs:
             job.cancel()
+
+    async def _load_name(self) -> None:
+        """The name the AirPods had when paired with Windows (their broadcasts only carry a
+        model code). A rename on the phone shows up here only after pairing again."""
+        try:
+            device = await BluetoothDevice.from_bluetooth_address_async(self.airpods.mac)
+        except Exception as e:  # WinRT errors aren't all OSError
+            log("couldn't read the AirPods' name:", repr(e))
+            return
+        name = (device.name if device else "") or ""
+        # Older Windows builds add this to AirPods with Find My turned on.
+        name = name.removesuffix(" - Find My").strip()
+        if name:
+            self.name = name
+            self._changed()
 
     async def _keep_running(self, job, name: str) -> None:
         """Run a background job forever: if it crashes, log why and start it again."""
@@ -316,7 +338,8 @@ class AirPodsEngine:
 
     def _changed(self) -> None:
         """Tell the app when something it shows changed (adverts arrive many times a second)."""
-        signature = (self.model_name(), self.battery_text(), self.connected, self.connecting,
+        signature = (self.display_name(), self.model_name(), self.battery_text(),
+                     self.connected, self.connecting,
                      self.disconnecting, self.connect_failed, self.in_range)
         if signature != self._last_signature:
             self._last_signature = signature

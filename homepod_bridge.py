@@ -989,24 +989,31 @@ class TrayApp:
     def update_airpods_row(self, row: dict) -> None:
         pods = self.airpods
         battery = pods.battery_text()
+        # Title: their own name ("Ahmad's AirPods Pro"); the line below says the model,
+        # like the speaker rows ("Kitchen" / "HomePod Mini").
+        model = pods.model_name() if pods.display_name() != pods.model_name() else ""
+
+        def line(*parts: str) -> str:
+            return "  ·  ".join(part for part in parts if part)
+
         if pods.connecting:
             state, colour, active = "Connecting...", ACCENT, True
         elif pods.disconnecting:
             state, colour, active = "Disconnecting...", SUBTLE, True
         elif pods.connected:
-            state = "Connected" + (f"   {battery}" if battery else "")
-            colour, active = GOOD, True
+            state, colour, active = line("Connected", battery), GOOD, True
         elif pods.connect_failed:
-            state = "Couldn't connect" + (f"   {battery}" if battery else "")
-            colour, active = SUBTLE, False
+            state, colour, active = line("Couldn't connect", battery), SUBTLE, False
         else:
             # Last known battery even when they've gone quiet (the shaded Connect
             # says they're out of range).
-            state = battery or ("Nearby" if pods.in_range else "Open the case nearby to connect")
+            hint = "" if battery or pods.in_range else "open the case nearby to connect"
+            state = line(model, battery, hint) or "Nearby"
+            state = state[0].upper() + state[1:]
             colour, active = SUBTLE, False
         row["icon"].config(image=self.icon_image("airpods", GOOD if pods.connected
                                                  else ACCENT if pods.connecting else SUBTLE))
-        row["title"].config(text=pods.model_name(), fg=FG)
+        row["title"].config(text=pods.display_name(), fg=FG)
         row["state"].config(text=state, fg=colour)
         button = row["button"]
         if active:
@@ -1136,7 +1143,7 @@ class TrayApp:
         lines = [f"Playing on {self.connected_name}" if active else APP_NAME]
         if self.airpods.paired:
             battery = self.airpods.battery_text()
-            pods = self.airpods.model_name()
+            pods = self.airpods.display_name()
             lines.append(f"{pods}: {battery}" if battery else
                          f"{pods}: connected" if self.airpods.connected else "")
         title = "\n".join(line for line in lines if line)[:127]
